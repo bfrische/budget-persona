@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "Budget Persona",
+  "version": "1.0.0",
+  "description": "Periodically browses budget sites, frugal YouTube videos and money-saving searches in the background.",
+  "permissions": ["alarms", "storage", "tabs", "scripting"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Budget Persona"
+  }
+}

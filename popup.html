@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { font: 13px -apple-system, system-ui, sans-serif; width: 320px; margin: 12px; }
+    h1 { font-size: 15px; margin: 0 0 10px; }
+    .row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+    button { padding: 6px 10px; cursor: pointer; }
+    #next { color: #666; margin-bottom: 10px; }
+    ul { list-style: none; padding: 0; margin: 0; max-height: 240px; overflow-y: auto; }
+    li { padding: 4px 0; border-top: 1px solid #eee; word-break: break-all; }
+    time { color: #888; margin-right: 6px; }
+  </style>
+</head>
+<body>
+  <h1>Budget Persona</h1>
+  <div class="row">
+    <label><input type="checkbox" id="enabled"> Enabled</label>
+    <button id="run">Run a session now</button>
+  </div>
+  <div id="next"></div>
+  <ul id="history"></ul>
+  <script src="popup.js"></script>
+</body>
+</html>
