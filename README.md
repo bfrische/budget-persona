@@ -1,12 +1,12 @@
 # Budget Persona
 
-A Chrome extension that, every 20–60 minutes during waking hours, opens a small muted window in the corner and does one of:
+A Chrome extension that, every 20–60 minutes during waking hours, opens a small muted window in the corner and runs 3–6 steps back to back, each one of:
 
 - **Browses a budget site** (Dollar Tree, Aldi, r/povertyfinance, coupon sites…) — scrolls around, sometimes clicks a link.
 - **Watches a frugal YouTube video** for 4–12 minutes (from a search like "struggle meals" or a listed channel).
 - **Runs a money-saving Google search** and reads one of the top results.
 
-Then it closes the window. It runs in your real Chrome profile, so Google, YouTube, Reddit and ad networks see it as you.
+When the last step is done it closes the window. It runs in your real Chrome profile, so Google, YouTube, Reddit and ad networks see it as you.
 
 ## Install
 

@@ -8,7 +8,10 @@ export const CONFIG = {
   // Only run between these local hours (24h clock). [9, 23] = 9am–11pm.
   activeHours: [9, 23],
 
-  // Relative odds of each kind of session.
+  // Each session runs this many steps back to back in the same window.
+  stepsPerSession: [3, 6],
+
+  // Relative odds of each kind of step.
   weights: { site: 4, youtube: 4, search: 2 },
 
   // How long to linger on a site / search page, in seconds.

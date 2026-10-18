@@ -1,11 +1,12 @@
 import { CONFIG } from "./config.js";
 
 const TICK = "tick";
-const CLOSE_PREFIX = "close:";
+const STEP_PREFIX = "step:";
 const MAX_LOG = 300;
 
 const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
 const rand = ([min, max]) => min + Math.random() * (max - min);
+const randInt = ([min, max]) => Math.floor(min + Math.random() * (max - min + 1));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const clock = (ms) => new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 
@@ -65,23 +66,23 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
       const [start, end] = CONFIG.activeHours;
       return log("warn", `skipped: outside active hours (${start}:00–${end}:00)`);
     }
-    await runSession();
-  } else if (alarm.name.startsWith(CLOSE_PREFIX)) {
-    const [winId, session] = alarm.name.slice(CLOSE_PREFIX.length).split(":");
-    await closeWorker(Number(winId), session);
+    await startSession();
+  } else if (alarm.name.startsWith(STEP_PREFIX)) {
+    await runSteps(alarm.name.slice(STEP_PREFIX.length));
   }
 });
 
 chrome.windows.onRemoved.addListener(async (winId) => {
-  const { workerWindow, workerSession } = await chrome.storage.session.get(["workerWindow", "workerSession"]);
-  if (winId !== workerWindow) return;
-  await chrome.storage.session.remove(["workerWindow", "workerSession"]);
-  await log("warn", "worker window was closed early (by you or Chrome)", workerSession);
+  const { worker } = await chrome.storage.session.get("worker");
+  if (!worker || winId !== worker.winId) return;
+  await chrome.storage.session.remove("worker");
+  await chrome.alarms.clear(STEP_PREFIX + worker.session);
+  await log("warn", `worker window was closed early at step ${worker.index}/${worker.steps.length} (by you or Chrome)`, worker.session);
 });
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === "runNow") {
-    log("info", "manual run requested from popup").then(runSession).then(sendResponse);
+    log("info", "manual run requested from popup").then(startSession).then(sendResponse);
     return true;
   }
   if (msg.type === "status") {
@@ -97,72 +98,113 @@ function inActiveHours() {
 }
 
 async function status() {
-  const [{ enabled }, tick, { workerWindow, workerSession }] = await Promise.all([
+  const [{ enabled }, tick, { worker }] = await Promise.all([
     chrome.storage.local.get("enabled"),
     chrome.alarms.get(TICK),
-    chrome.storage.session.get(["workerWindow", "workerSession"]),
+    chrome.storage.session.get("worker"),
   ]);
-  const closeAlarm = workerWindow ? (await chrome.alarms.getAll()).find((a) => a.name.startsWith(CLOSE_PREFIX + workerWindow + ":")) : null;
+  const stepAlarm = worker ? await chrome.alarms.get(STEP_PREFIX + worker.session) : null;
   return {
     enabled: !!enabled,
     activeHours: CONFIG.activeHours,
     inActiveHours: inActiveHours(),
     nextRun: tick?.scheduledTime ?? null,
-    worker: workerWindow ? { session: workerSession, closesAt: closeAlarm?.scheduledTime ?? null } : null,
+    worker: worker
+      ? {
+          session: worker.session,
+          step: worker.index,
+          total: worker.steps.length,
+          current: worker.steps[worker.index - 1] ?? null,
+          nextStepAt: stepAlarm?.scheduledTime ?? null,
+        }
+      : null,
   };
 }
 
 // ---------- sessions ----------
 
-async function runSession() {
-  if (await workerBusy()) return log("warn", "skipped: previous session's window is still open");
+// A session opens one window and runs several steps in it back to back.
+// Progress lives in chrome.storage.session so it survives the service worker
+// being shut down between steps; each step's dwell time is an alarm.
+
+async function startSession() {
+  if (await workerBusy()) return log("warn", "skipped: a session is already running");
 
   const session = Math.random().toString(36).slice(2, 6);
   const kinds = Object.entries(CONFIG.weights).flatMap(([k, w]) => Array(w).fill(k));
-  const kind = pick(kinds);
-  await log("info", `session started: ${kind}`, session);
-  try {
-    if (kind === "site") return await visitSite(session);
-    if (kind === "youtube") return await watchYouTube(session);
-    if (kind === "search") return await googleSearch(session);
-  } catch (e) {
-    return log("error", `session failed: ${e.message}`, session);
+  const steps = Array.from({ length: randInt(CONFIG.stepsPerSession) }, () => pick(kinds));
+  await log("info", `session started with ${steps.length} steps: ${steps.join(" → ")}`, session);
+
+  const { winId, tabId } = await openWorker(session);
+  await chrome.storage.session.set({ worker: { session, winId, tabId, steps, index: 0 } });
+  await runSteps(session);
+}
+
+// Runs steps until one needs to dwell (then sets an alarm and returns),
+// or until there are none left (then closes the window).
+async function runSteps(session) {
+  while (true) {
+    const { worker } = await chrome.storage.session.get("worker");
+    if (!worker || worker.session !== session) return; // window was closed or session replaced
+
+    if (worker.index >= worker.steps.length) return closeWorker(worker);
+
+    const kind = worker.steps[worker.index];
+    worker.index += 1;
+    await chrome.storage.session.set({ worker });
+    await log("info", `step ${worker.index}/${worker.steps.length}: ${kind}`, session);
+
+    let seconds = 0;
+    try {
+      seconds = await STEPS[kind](worker.tabId, session);
+    } catch (e) {
+      await log("error", `step failed: ${e.message} — moving on`, session);
+    }
+
+    // Alarms can't fire sooner than 30s; anything shorter just moves straight on.
+    if (seconds >= 30) {
+      const when = Date.now() + seconds * 1000;
+      await chrome.alarms.create(STEP_PREFIX + session, { when });
+      const next = worker.index < worker.steps.length ? `next step at ${clock(when)}` : `session ends at ${clock(when)}`;
+      return log("info", `staying ${(seconds / 60).toFixed(1)} min — ${next}`, session);
+    }
   }
 }
 
-async function visitSite(session) {
+const STEPS = { site: visitSite, search: googleSearch, youtube: watchYouTube };
+
+// Each step navigates the worker tab and returns how many seconds to stay.
+
+async function visitSite(tabId, session) {
   const url = pick(CONFIG.sites);
-  const { winId, tabId } = await openWorker(url, session);
+  await navigate(tabId, url, session);
   const dwell = rand(CONFIG.siteDwellSec);
-  await waitForLoad(tabId, session);
-  await logPage(tabId, session);
-  await inject(tabId, browseLikeAHuman, [dwell], session, `scrolling for ${dwell.toFixed(0)}s`);
-  await scheduleClose(winId, dwell + 10, session);
+  await inject(tabId, browseLikeAHuman, [dwell], session, `scrolling around for ${dwell.toFixed(0)}s`);
+  return dwell;
 }
 
-async function googleSearch(session) {
+async function googleSearch(tabId, session) {
   const q = pick(CONFIG.googleSearches);
-  const url = `https://www.google.com/search?q=${encodeURIComponent(q)}`;
   await log("info", `searching Google for "${q}"`, session);
-  const { winId, tabId } = await openWorker(url, session);
-  const dwell = rand(CONFIG.siteDwellSec);
-  await waitForLoad(tabId, session);
-  await logPage(tabId, session);
+  await navigate(tabId, `https://www.google.com/search?q=${encodeURIComponent(q)}`, session);
 
+  const loaded = waitForComplete(tabId, session);
   const clicked = await inject(tabId, clickSearchResult, [], session);
   if (clicked) {
     await log("info", `clicked result: ${clicked}`, session);
-    await sleep(4000);
-    await waitForLoad(tabId, session);
+    await loaded;
     await logPage(tabId, session);
   } else {
+    loaded.cancel();
     await log("warn", "no clickable search results found (consent page or CAPTCHA?)", session);
   }
-  await inject(tabId, browseLikeAHuman, [dwell], session, `scrolling for ${dwell.toFixed(0)}s`);
-  await scheduleClose(winId, dwell + 10, session);
+
+  const dwell = rand(CONFIG.siteDwellSec);
+  await inject(tabId, browseLikeAHuman, [dwell], session, `scrolling around for ${dwell.toFixed(0)}s`);
+  return dwell;
 }
 
-async function watchYouTube(session) {
+async function watchYouTube(tabId, session) {
   const useChannel = CONFIG.youtubeChannels.length && Math.random() < 0.35;
   const label = useChannel ? pick(CONFIG.youtubeChannels) : pick(CONFIG.youtubeSearches);
   const listUrl = useChannel
@@ -170,8 +212,7 @@ async function watchYouTube(session) {
     : `https://www.youtube.com/results?search_query=${encodeURIComponent(label)}`;
   await log("info", useChannel ? `opening channel ${label}` : `searching YouTube for "${label}"`, session);
 
-  const { winId, tabId } = await openWorker(listUrl, session);
-  await waitForLoad(tabId, session);
+  await navigate(tabId, listUrl, session);
   await sleep(3000); // let YouTube render its results
 
   const links = await inject(
@@ -185,16 +226,13 @@ async function watchYouTube(session) {
     session
   );
   if (!links?.length) {
-    await log("warn", "no videos found on the page", session);
-    return closeWorker(winId, session);
+    await log("warn", "no videos found on the page — skipping", session);
+    return 0;
   }
   await log("info", `found ${links.length} candidate videos`, session);
 
-  const video = pick(links);
-  await chrome.tabs.update(tabId, { url: video });
-  await waitForLoad(tabId, session);
+  await navigate(tabId, pick(links), session);
   await sleep(3000);
-  await logPage(tabId, session);
 
   const playback = await inject(
     tabId,
@@ -213,71 +251,70 @@ async function watchYouTube(session) {
   );
   await log(playback?.startsWith("playing") ? "info" : "warn", `video: ${playback}`, session);
 
-  const mins = rand(CONFIG.watchMin);
-  await scheduleClose(winId, mins * 60, session);
+  return rand(CONFIG.watchMin) * 60;
 }
 
 // ---------- worker window ----------
 
-async function openWorker(url, session) {
+async function openWorker(session) {
   const { state, ...bounds } = CONFIG.window;
   const win = await chrome.windows.create({
-    url,
+    url: "about:blank",
     focused: false,
     type: "normal",
     ...(state === "minimized" ? { state } : bounds),
   });
   const tabId = win.tabs[0].id;
   await chrome.tabs.update(tabId, { muted: true });
-  await chrome.storage.session.set({ workerWindow: win.id, workerSession: session });
-  await log("info", `opened ${state === "minimized" ? "minimized" : `${bounds.width}×${bounds.height}`} window → ${url}`, session);
+  await log("info", `opened ${state === "minimized" ? "minimized" : `${bounds.width}×${bounds.height}`} muted window`, session);
   return { winId: win.id, tabId };
 }
 
 async function workerBusy() {
-  const { workerWindow } = await chrome.storage.session.get("workerWindow");
-  if (!workerWindow) return false;
+  const { worker } = await chrome.storage.session.get("worker");
+  if (!worker) return false;
   try {
-    await chrome.windows.get(workerWindow);
+    await chrome.windows.get(worker.winId);
     return true;
   } catch {
-    await chrome.storage.session.remove(["workerWindow", "workerSession"]);
+    await chrome.storage.session.remove("worker");
     return false;
   }
 }
 
-async function scheduleClose(winId, seconds, session) {
-  const when = Date.now() + Math.max(seconds, 30) * 1000;
-  await chrome.alarms.create(`${CLOSE_PREFIX}${winId}:${session}`, { when });
-  await log("info", `window will close at ${clock(when)}`, session);
-}
-
-async function closeWorker(winId, session) {
+async function closeWorker(worker) {
   // Clear state first so onRemoved doesn't report this as an early close.
-  await chrome.storage.session.remove(["workerWindow", "workerSession"]);
-  try {
-    await chrome.windows.remove(winId);
-    await log("info", "session finished, window closed", session);
-  } catch {
-    await log("info", "session finished (window was already gone)", session);
-  }
+  await chrome.storage.session.remove("worker");
+  await chrome.windows.remove(worker.winId).catch(() => {});
+  await log("info", `session finished after ${worker.steps.length} steps, window closed`, worker.session);
 }
 
-function waitForLoad(tabId, session, timeoutMs = 30_000) {
-  return new Promise((resolve) => {
-    const started = Date.now();
-    const done = (timedOut = false) => {
+async function navigate(tabId, url, session) {
+  const loaded = waitForComplete(tabId, session);
+  await chrome.tabs.update(tabId, { url });
+  await loaded;
+  await logPage(tabId, session);
+}
+
+// Resolves on the tab's next "complete" event. Attach it *before* triggering
+// navigation, otherwise the previous page's "complete" state counts.
+function waitForComplete(tabId, session, timeoutMs = 30_000) {
+  let finish;
+  const started = Date.now();
+  const promise = new Promise((resolve) => {
+    finish = (outcome) => {
       chrome.tabs.onUpdated.removeListener(onUpdated);
       clearTimeout(timer);
-      if (timedOut) log("warn", `page still loading after ${timeoutMs / 1000}s, continuing anyway`, session);
-      else log("info", `page loaded in ${((Date.now() - started) / 1000).toFixed(1)}s`, session);
+      if (outcome === "loaded") log("info", `page loaded in ${((Date.now() - started) / 1000).toFixed(1)}s`, session);
+      if (outcome === "timeout") log("warn", `page still loading after ${timeoutMs / 1000}s, continuing anyway`, session);
       resolve();
     };
-    const onUpdated = (id, info) => id === tabId && info.status === "complete" && done();
-    const timer = setTimeout(() => done(true), timeoutMs);
-    chrome.tabs.onUpdated.addListener(onUpdated);
-    chrome.tabs.get(tabId).then((t) => t.status === "complete" && done()).catch(() => done());
   });
+  const onUpdated = (id, info) => id === tabId && info.status === "complete" && finish("loaded");
+  const timer = setTimeout(() => finish("timeout"), timeoutMs);
+  chrome.tabs.onUpdated.addListener(onUpdated);
+  promise.cancel = () => finish("cancelled");
+  return promise;
 }
 
 async function logPage(tabId, session) {

@@ -6,6 +6,12 @@ function until(ms) {
   return s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`;
 }
 
+function runningText(w) {
+  const last = w.step >= w.total;
+  const wait = w.nextStepAt ? `, ${last ? "ends" : "next step"} in ${until(w.nextStepAt)}` : "";
+  return `session #${w.session}, step ${w.step}/${w.total} (${w.current})${wait}`;
+}
+
 async function renderStatus() {
   const s = await chrome.runtime.sendMessage({ type: "status" });
   $("enabled").checked = s.enabled;
@@ -14,7 +20,7 @@ async function renderStatus() {
     `<b>State:</b> ${s.enabled ? "enabled" : '<span class="warn-text">paused</span>'}`,
     `<b>Active hours:</b> ${start}:00–${end}:00 ${s.inActiveHours ? "(now inside)" : '<span class="warn-text">(now outside — sessions will be skipped)</span>'}`,
     `<b>Next session:</b> ${s.nextRun ? `${clock(s.nextRun)} (in ${until(s.nextRun)})` : '<span class="warn-text">none scheduled</span>'}`,
-    `<b>Running now:</b> ${s.worker ? `session #${s.worker.session}${s.worker.closesAt ? `, closes in ${until(s.worker.closesAt)}` : ""}` : "nothing"}`,
+    `<b>Running now:</b> ${s.worker ? runningText(s.worker) : "nothing"}`,
   ];
   $("status").innerHTML = lines.join("<br>");
 }
