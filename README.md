@@ -19,6 +19,17 @@ Then it closes the window. It runs in your real Chrome profile, so Google, YouTu
 
 Edit `config.js` (sites, searches, channels, timing, active hours), then hit the reload icon on the extension's card in `chrome://extensions`.
 
+## Seeing what it's doing
+
+Click the extension icon. The popup shows:
+
+- **Status:** enabled or paused, whether you're inside the active hours, a countdown to the next session, and what's running right now.
+- **Live log:** every step of every session (window opened, page loaded, page title, video playing or blocked, window closed), grouped by session ID. Warnings are yellow and errors are red. Tick "Only warnings & errors" to filter.
+
+The same lines also go to the service worker console: in `chrome://extensions`, click **service worker** on the Budget Persona card.
+
+If nothing seems to happen, check the log for `skipped: outside active hours` or `skipped: extension is paused`. Remember the first session runs 20–60 minutes after install, so use **Run a session now** to test.
+
 ## Notes
 
 - Stay signed in to Google/YouTube in this Chrome profile, or the watch/search history won't attach to your account.

@@ -3,14 +3,24 @@
 <head>
   <meta charset="utf-8">
   <style>
-    body { font: 13px -apple-system, system-ui, sans-serif; width: 320px; margin: 12px; }
+    body { font: 13px -apple-system, system-ui, sans-serif; width: 460px; margin: 12px; }
     h1 { font-size: 15px; margin: 0 0 10px; }
-    .row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
-    button { padding: 6px 10px; cursor: pointer; }
-    #next { color: #666; margin-bottom: 10px; }
-    ul { list-style: none; padding: 0; margin: 0; max-height: 240px; overflow-y: auto; }
-    li { padding: 4px 0; border-top: 1px solid #eee; word-break: break-all; }
+    .row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+    .row label { margin-right: auto; }
+    button { padding: 5px 10px; cursor: pointer; }
+    #status { background: #f5f5f5; border-radius: 6px; padding: 8px 10px; margin-bottom: 10px; line-height: 1.6; }
+    #status b { font-weight: 600; }
+    .warn-text { color: #b26a00; }
+    #filters { display: flex; gap: 10px; margin-bottom: 6px; color: #555; }
+    ul { list-style: none; padding: 0; margin: 0; max-height: 380px; overflow-y: auto;
+         font: 11.5px ui-monospace, Menlo, monospace; }
+    li { padding: 3px 4px; border-top: 1px solid #eee; word-break: break-all; }
+    li.warn { background: #fff8e6; }
+    li.error { background: #fdecec; color: #a40000; }
+    li.new-session { border-top: 2px solid #999; }
     time { color: #888; margin-right: 6px; }
+    .sid { color: #6a5acd; margin-right: 6px; }
+    .empty { color: #888; padding: 8px 0; }
   </style>
 </head>
 <body>
@@ -18,8 +28,12 @@
   <div class="row">
     <label><input type="checkbox" id="enabled"> Enabled</label>
     <button id="run">Run a session now</button>
+    <button id="clear">Clear log</button>
   </div>
-  <div id="next"></div>
+  <div id="status">Loading…</div>
+  <div id="filters">
+    <label><input type="checkbox" id="onlyProblems"> Only warnings &amp; errors</label>
+  </div>
   <ul id="history"></ul>
   <script src="popup.js"></script>
 </body>
