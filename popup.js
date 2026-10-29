@@ -15,6 +15,7 @@ function runningText(w) {
 async function renderStatus() {
   const s = await chrome.runtime.sendMessage({ type: "status" });
   $("enabled").checked = s.enabled;
+  $("stop").disabled = !s.worker;
   const [start, end] = s.activeHours;
   const lines = [
     `<b>State:</b> ${s.enabled ? "enabled" : '<span class="warn-text">paused</span>'}`,
@@ -64,6 +65,8 @@ $("run").addEventListener("click", async () => {
   await chrome.runtime.sendMessage({ type: "runNow" });
   $("run").disabled = false;
 });
+
+$("stop").addEventListener("click", () => chrome.runtime.sendMessage({ type: "stop" }));
 
 $("clear").addEventListener("click", () => chrome.storage.local.set({ history: [] }));
 $("onlyProblems").addEventListener("change", renderLog);

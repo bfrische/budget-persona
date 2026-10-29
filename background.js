@@ -89,6 +89,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     status().then(sendResponse);
     return true;
   }
+  if (msg.type === "stop") {
+    chrome.storage.session
+      .get("worker")
+      .then(({ worker }) => (worker ? closeWorker(worker, "stopped") : log("info", "stop requested, but nothing was running")))
+      .then(sendResponse);
+    return true;
+  }
 });
 
 function inActiveHours() {
@@ -126,6 +133,12 @@ async function status() {
 // A session opens one window and runs several steps in it back to back.
 // Progress lives in chrome.storage.session so it survives the service worker
 // being shut down between steps; each step's dwell time is an alarm.
+//
+// Chrome can also suspend the service worker *during* a step, killing it
+// before it sets the next alarm. To recover, a fallback alarm is set before
+// every step: if the step never finishes, that alarm moves on to the next one.
+
+const STEP_TIMEOUT_SEC = 180;
 
 async function startSession() {
   if (await workerBusy()) return log("warn", "skipped: a session is already running");
@@ -136,7 +149,9 @@ async function startSession() {
   await log("info", `session started with ${steps.length} steps: ${steps.join(" → ")}`, session);
 
   const { winId, tabId } = await openWorker(session);
-  await chrome.storage.session.set({ worker: { session, winId, tabId, steps, index: 0 } });
+  await chrome.storage.session.set({
+    worker: { session, winId, tabId, steps, index: 0, inStep: false, startedAt: Date.now() },
+  });
   await runSteps(session);
 }
 
@@ -147,11 +162,20 @@ async function runSteps(session) {
     const { worker } = await chrome.storage.session.get("worker");
     if (!worker || worker.session !== session) return; // window was closed or session replaced
 
+    if (worker.inStep) {
+      await log("warn", `step ${worker.index} never finished (Chrome likely suspended the extension) — moving on`, session);
+    }
+    if (Date.now() - worker.startedAt > CONFIG.maxSessionMin * 60_000) {
+      await log("warn", `session hit the ${CONFIG.maxSessionMin} min limit — ending it`, session);
+      return closeWorker(worker);
+    }
     if (worker.index >= worker.steps.length) return closeWorker(worker);
 
     const kind = worker.steps[worker.index];
     worker.index += 1;
+    worker.inStep = true;
     await chrome.storage.session.set({ worker });
+    await chrome.alarms.create(STEP_PREFIX + session, { when: Date.now() + STEP_TIMEOUT_SEC * 1000 });
     await log("info", `step ${worker.index}/${worker.steps.length}: ${kind}`, session);
 
     let seconds = 0;
@@ -160,6 +184,12 @@ async function runSteps(session) {
     } catch (e) {
       await log("error", `step failed: ${e.message} — moving on`, session);
     }
+
+    // The window may have been closed or the session stopped mid-step.
+    const { worker: current } = await chrome.storage.session.get("worker");
+    if (!current || current.session !== session) return;
+    current.inStep = false;
+    await chrome.storage.session.set({ worker: current });
 
     // Alarms can't fire sooner than 30s; anything shorter just moves straight on.
     if (seconds >= 30) {
@@ -275,18 +305,28 @@ async function workerBusy() {
   if (!worker) return false;
   try {
     await chrome.windows.get(worker.winId);
-    return true;
   } catch {
     await chrome.storage.session.remove("worker");
     return false;
   }
+
+  // A live session always has a pending step alarm and stays under the time
+  // limit. If either is off, it's stuck: close it so a new one can start.
+  const alarm = await chrome.alarms.get(STEP_PREFIX + worker.session);
+  const overtime = Date.now() - worker.startedAt > (CONFIG.maxSessionMin + 5) * 60_000;
+  if (alarm && !overtime) return true;
+  await log("warn", `session was stuck (${alarm ? "over time limit" : "no next step scheduled"}) — closing it`, worker.session);
+  await closeWorker(worker, "stuck");
+  return false;
 }
 
-async function closeWorker(worker) {
+async function closeWorker(worker, reason = "finished") {
   // Clear state first so onRemoved doesn't report this as an early close.
   await chrome.storage.session.remove("worker");
+  await chrome.alarms.clear(STEP_PREFIX + worker.session);
   await chrome.windows.remove(worker.winId).catch(() => {});
-  await log("info", `session finished after ${worker.steps.length} steps, window closed`, worker.session);
+  const what = { finished: `finished after ${worker.steps.length} steps`, stuck: "cleared", stopped: "stopped by you" }[reason];
+  await log("info", `session ${what}, window closed`, worker.session);
 }
 
 async function navigate(tabId, url, session) {

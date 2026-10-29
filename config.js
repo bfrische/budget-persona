@@ -11,6 +11,9 @@ export const CONFIG = {
   // Each session runs this many steps back to back in the same window.
   stepsPerSession: [3, 6],
 
+  // Hard cap on one session's length; anything still running after this is closed.
+  maxSessionMin: 90,
+
   // Relative odds of each kind of step.
   weights: { site: 4, youtube: 4, search: 2 },
 
